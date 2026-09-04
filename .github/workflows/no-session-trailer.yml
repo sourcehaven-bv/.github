@@ -1,0 +1,81 @@
+name: No Session Trailer
+
+# Reusable check: fails when an agent session-attribution trailer appears in
+# any commit on the PR branch, or in the PR title/body -- GitHub composes the
+# squash-merge commit message from those, so a trailer there reaches the
+# default branch even when no individual commit carries one.
+#
+# Call it from a repo with:
+#   jobs:
+#     no-session-trailer:
+#       uses: sourcehaven-bv/.github/.github/workflows/no-session-trailer.yml@main
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: No Session Trailer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan commits, title and body
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # Built at runtime so this file does not itself contain the literal
+          # trailer -- otherwise the check would flag its own source.
+          key="Claude-Session"
+          pattern="^[[:space:]]*${key}[[:space:]]*:"
+          fail=0
+
+          echo "::group::Commits in range"
+          if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ]; then
+            range="${BASE_SHA}..${HEAD_SHA}"
+          else
+            range="HEAD~1..HEAD"
+          fi
+          echo "range: $range"
+          git log --format='%H' "$range" > /tmp/shas 2>/dev/null || : > /tmp/shas
+          while read -r sha; do
+            [ -z "$sha" ] && continue
+            if git log -1 --format='%B' "$sha" | grep -qiE "$pattern"; then
+              subject=$(git log -1 --format='%s' "$sha")
+              echo "::error::Commit ${sha} contains a ${key}: trailer -- ${subject}"
+              fail=1
+            fi
+          done < /tmp/shas
+          echo "::endgroup::"
+
+          if printf '%s\n' "${PR_BODY:-}" | grep -qiE "$pattern"; then
+            echo "::error::PR body contains a ${key}: trailer (it would enter the squash-merge commit message)"
+            fail=1
+          fi
+
+          if printf '%s\n' "${PR_TITLE:-}" | grep -qiE "$pattern"; then
+            echo "::error::PR title contains a ${key}: trailer"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "Remove the ${key}: line(s)."
+            echo "  - In the PR title/body: edit the pull request."
+            echo "  - In commits: git rebase -i \$(git merge-base HEAD origin/BASE_BRANCH)"
+            exit 1
+          fi
+
+          echo "OK: no ${key}: trailer found."
